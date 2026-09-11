@@ -30,7 +30,7 @@ func allAPIs() []string {
 func (s *Store) Update(r protocol.LogRecord) {
 	isError := r.Status >= 500
 	s.Counters.Observe(r.API, isError)
-	s.Latencies.Observe(r.API, r.Lat)
+	s.Latencies.Observe(r.API, r.Latency)
 	s.TopIMSI.Increment(r.IMSI)
 	s.TopAPI.Increment(r.API)
 }

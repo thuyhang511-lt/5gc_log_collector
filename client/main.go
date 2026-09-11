@@ -76,18 +76,18 @@ func randomRecord(rng *rand.Rand) protocol.LogRecord {
 	}
 
 	return protocol.LogRecord{
-		NF:     nf,
-		API:    api,
-		IMSI:   randomIMSI(rng),
-		TSUnix: protocol.NowMillis(),
-		Lat:    int64(rng.Intn(300) + 1),
-		Status: status,
+		Timestamp: protocol.Now(),
+		NF:        nf,
+		API:       api,
+		IMSI:      randomIMSI(rng),
+		Latency:   int64(rng.Intn(300) + 1),
+		Status:    status,
 	}
 }
 
 func randomIMSI(rng *rand.Rand) string {
 	n := rng.Intn(100000)
-	return "001010" + padLeft(strconv.Itoa(n), 9)
+	return "45204" + padLeft(strconv.Itoa(n), 10)
 }
 
 func padLeft(s string, width int) string {
