@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"log"
@@ -57,13 +58,16 @@ func handleConn(conn net.Conn, pool *worker.Pool) {
 	defer conn.Close()
 	reader := bufio.NewReaderSize(conn, readBufferSize)
 	buf := make([]byte, readBufferSize)
+	var leftover []byte
 
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
-			chunk := make([]byte, n)
-			copy(chunk, buf[:n])
-			pool.Submit(chunk)
+			var completeLines []byte
+			completeLines, leftover = reassembleLines(leftover, buf[:n])
+			if len(completeLines) > 0 {
+				pool.Submit(completeLines)
+			}
 		}
 		if err != nil {
 			if err != io.EOF {
@@ -72,6 +76,21 @@ func handleConn(conn net.Conn, pool *worker.Pool) {
 			return
 		}
 	}
+}
+
+func reassembleLines(leftover, newData []byte) (complete, remainingLeftover []byte) {
+	combined := make([]byte, 0, len(leftover)+len(newData))
+	combined = append(combined, leftover...)
+	combined = append(combined, newData...)
+
+	lastNewline := bytes.LastIndexByte(combined, '\n')
+	if lastNewline == -1 {
+		return nil, combined
+	}
+
+	complete = combined[:lastNewline+1]
+	remainingLeftover = append([]byte(nil), combined[lastNewline+1:]...)
+	return complete, remainingLeftover
 }
 
 func serveHTTP(addr string, s *store.Store) {
