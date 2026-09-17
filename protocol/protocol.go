@@ -24,19 +24,18 @@ var ValidAPIs = map[string][]string{
 	"UDM": {"subscriber_data_get", "ue_context_update", "subscription_data_subscribe"},
 }
 
-func NFList() []string {
-	nfs := make([]string, 0, len(ValidAPIs))
-	for nf := range ValidAPIs {
-		nfs = append(nfs, nf)
-	}
-	return nfs
-}
+var networkFunctions = []string{"AMF", "SMF", "NEF", "UDM"}
 
 const timeLayout = time.RFC3339
+
+func NFList() []string {
+	return append([]string(nil), networkFunctions...)
+}
 
 func Encode(r LogRecord) []byte {
 	var b strings.Builder
 	b.Grow(128)
+
 	b.WriteString("timestamp=")
 	b.WriteString(r.Timestamp.UTC().Format(timeLayout))
 	b.WriteString(" nf=")
@@ -50,57 +49,126 @@ func Encode(r LogRecord) []byte {
 	b.WriteString(";status=")
 	b.WriteString(strconv.Itoa(r.Status))
 	b.WriteByte('\n')
+
 	return []byte(b.String())
 }
 
 func Parse(line []byte) (LogRecord, error) {
 	var r LogRecord
-	normalized := bytes.Join(bytes.Fields(line), []byte(";"))
-	s := string(normalized)
 
-	for s != "" {
+	normalized := bytes.Join(bytes.Fields(line), []byte(";"))
+	input := string(normalized)
+
+	var hasTimestamp, hasNF, hasAPI, hasIMSI, hasLatency, hasStatus bool
+
+	for input != "" {
 		var field string
-		field, s, _ = strings.Cut(s, ";")
+		field, input, _ = strings.Cut(input, ";")
 		if field == "" {
 			continue
 		}
-		key, val, ok := strings.Cut(field, "=")
-		if !ok {
+
+		key, value, ok := strings.Cut(field, "=")
+		if !ok || key == "" || value == "" {
 			return r, fmt.Errorf("protocol: invalid field %q", field)
 		}
+
 		switch key {
 		case "timestamp":
-			ts, err := time.Parse(timeLayout, val)
-			if err != nil {
-				return r, fmt.Errorf("protocol: invalid timestamp %q: %w", val, err)
+			if hasTimestamp {
+				return r, fmt.Errorf("protocol: duplicate timestamp")
 			}
-			r.Timestamp = ts
-		case "nf":
-			r.NF = val
-		case "api":
-			r.API = val
-		case "imsi":
-			r.IMSI = val
-		case "latency":
-			lat, err := strconv.ParseInt(val, 10, 64)
+			timestamp, err := time.Parse(timeLayout, value)
 			if err != nil {
-				return r, fmt.Errorf("protocol: invalid latency %q: %w", val, err)
+				return r, fmt.Errorf("protocol: invalid timestamp %q: %w", value, err)
 			}
-			r.Latency = lat
-		case "status":
-			code, err := strconv.Atoi(val)
-			if err != nil {
-				return r, fmt.Errorf("protocol: invalid status %q: %w", val, err)
-			}
-			r.Status = code
-		default:
+			r.Timestamp = timestamp
+			hasTimestamp = true
 
+		case "nf":
+			if hasNF {
+				return r, fmt.Errorf("protocol: duplicate nf")
+			}
+			r.NF = value
+			hasNF = true
+
+		case "api":
+			if hasAPI {
+				return r, fmt.Errorf("protocol: duplicate api")
+			}
+			r.API = value
+			hasAPI = true
+
+		case "imsi":
+			if hasIMSI {
+				return r, fmt.Errorf("protocol: duplicate imsi")
+			}
+			if !validIMSI(value) {
+				return r, fmt.Errorf("protocol: invalid imsi %q", value)
+			}
+			r.IMSI = value
+			hasIMSI = true
+
+		case "latency":
+			if hasLatency {
+				return r, fmt.Errorf("protocol: duplicate latency")
+			}
+			latency, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || latency < 0 {
+				return r, fmt.Errorf("protocol: invalid latency %q", value)
+			}
+			r.Latency = latency
+			hasLatency = true
+
+		case "status":
+			if hasStatus {
+				return r, fmt.Errorf("protocol: duplicate status")
+			}
+			status, err := strconv.Atoi(value)
+			if err != nil || status < 100 || status > 599 {
+				return r, fmt.Errorf("protocol: invalid status %q", value)
+			}
+			r.Status = status
+			hasStatus = true
+
+		default:
+			return r, fmt.Errorf("protocol: unknown field %q", key)
 		}
 	}
-	if r.NF == "" || r.API == "" {
-		return r, fmt.Errorf("protocol: missing nf/api in line %q", line)
+
+	if !hasTimestamp || !hasNF || !hasAPI || !hasIMSI || !hasLatency || !hasStatus {
+		return r, fmt.Errorf("protocol: missing required field")
 	}
+	if !validNFAPI(r.NF, r.API) {
+		return r, fmt.Errorf("protocol: api %q is not valid for nf %q", r.API, r.NF)
+	}
+
 	return r, nil
+}
+
+func validIMSI(imsi string) bool {
+	if len(imsi) != 15 {
+		return false
+	}
+	for i := 0; i < len(imsi); i++ {
+		if imsi[i] < '0' || imsi[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validNFAPI(nf, api string) bool {
+	apis, ok := ValidAPIs[nf]
+	if !ok {
+		return false
+	}
+	for _, allowed := range apis {
+		if api == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func Now() time.Time {
