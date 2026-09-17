@@ -29,15 +29,25 @@ func main() {
 	numWorkers := envOrInt("WORKER_COUNT", runtime.GOMAXPROCS(0))
 	channelBuffer := envOrInt("CHANNEL_BUFFER", 8192)
 	storageDir := envOr("STORAGE_DIR", "data/logs")
-	segmentRecords := int64(envOrInt("STORAGE_SEGMENT_RECORDS", 1_000_000))
-	storageQueue := envOrInt("STORAGE_QUEUE", 65_536)
+	segmentRecords := int64(envOrInt("STORAGE_SEGMENT_RECORDS", 250_000))
+	retentionRecords := int64(envOrInt("RETENTION_RECORDS", 3_000_000))
+	storageQueue := envOrInt("STORAGE_QUEUE", 16_384)
 
-	if numWorkers <= 0 || channelBuffer <= 0 || segmentRecords <= 0 || storageQueue <= 0 {
-		log.Fatal("server: WORKER_COUNT, CHANNEL_BUFFER, STORAGE_SEGMENT_RECORDS và STORAGE_QUEUE phải lớn hơn 0")
+	if numWorkers <= 0 ||
+		channelBuffer <= 0 ||
+		segmentRecords <= 0 ||
+		retentionRecords < segmentRecords ||
+		storageQueue <= 0 {
+		log.Fatal("server: storage và worker configuration không hợp lệ")
 	}
 
 	s := store.New()
-	if err := s.EnablePersistence(storageDir, segmentRecords, storageQueue); err != nil {
+	if err := s.EnablePersistence(
+		storageDir,
+		segmentRecords,
+		retentionRecords,
+		storageQueue,
+	); err != nil {
 		log.Fatalf("server: không thể khởi tạo lưu trữ: %v", err)
 	}
 

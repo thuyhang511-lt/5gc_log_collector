@@ -7,22 +7,34 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-const defaultSegmentRecords int64 = 1_000_000
+const (
+	defaultSegmentRecords   int64 = 250_000
+	defaultRetentionRecords int64 = 3_000_000
+)
 
 type StorageStat struct {
-	StoredRecords int64  `json:"stored_records"`
-	WriteError    string `json:"write_error,omitempty"`
+	StoredRecords    int64  `json:"stored_records"`
+	RetentionRecords int64  `json:"retention_records"`
+	SegmentCount     int64  `json:"segment_count"`
+	WriteError       string `json:"write_error,omitempty"`
+}
+
+type segment struct {
+	path    string
+	records int64
 }
 
 type PersistentLog struct {
-	dir            string
-	segmentRecords int64
-	in             chan []byte
+	dir              string
+	segmentRecords   int64
+	retentionRecords int64
+	in               chan []byte
 
 	mu     sync.RWMutex
 	closed bool
@@ -32,16 +44,30 @@ type PersistentLog struct {
 	failed   chan struct{}
 	failOnce sync.Once
 
-	records atomic.Int64
-	wg      sync.WaitGroup
+	records      atomic.Int64
+	segmentCount atomic.Int64
+
+	segments []*segment
+	wg       sync.WaitGroup
 }
 
-func NewPersistentLog(dir string, segmentRecords int64, queueSize int) (*PersistentLog, error) {
+func NewPersistentLog(
+	dir string,
+	segmentRecords int64,
+	retentionRecords int64,
+	queueSize int,
+) (*PersistentLog, error) {
 	if dir == "" {
 		return nil, errors.New("storage directory is required")
 	}
 	if segmentRecords <= 0 {
 		segmentRecords = defaultSegmentRecords
+	}
+	if retentionRecords <= 0 {
+		retentionRecords = defaultRetentionRecords
+	}
+	if retentionRecords < segmentRecords {
+		return nil, errors.New("retention records must be greater than or equal to segment records")
 	}
 	if queueSize <= 0 {
 		return nil, errors.New("storage queue size must be positive")
@@ -50,18 +76,26 @@ func NewPersistentLog(dir string, segmentRecords int64, queueSize int) (*Persist
 		return nil, fmt.Errorf("create storage directory: %w", err)
 	}
 
-	existing, err := countStoredRecords(dir)
+	segments, total, err := scanSegments(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	segments, total, err = trimSegments(segments, total, retentionRecords)
 	if err != nil {
 		return nil, err
 	}
 
 	p := &PersistentLog{
-		dir:            dir,
-		segmentRecords: segmentRecords,
-		in:             make(chan []byte, queueSize),
-		failed:         make(chan struct{}),
+		dir:              dir,
+		segmentRecords:   segmentRecords,
+		retentionRecords: retentionRecords,
+		in:               make(chan []byte, queueSize),
+		failed:           make(chan struct{}),
+		segments:         segments,
 	}
-	p.records.Store(existing)
+	p.records.Store(total)
+	p.segmentCount.Store(int64(len(segments)))
 	p.wg.Add(1)
 	go p.run()
 
@@ -73,7 +107,7 @@ func (p *PersistentLog) Append(raw []byte) error {
 		return errors.New("cannot persist an empty record")
 	}
 
-	record := make([]byte, len(raw))
+	record := make([]byte, len(raw), len(raw)+1)
 	copy(record, raw)
 	record = append(record, '\n')
 
@@ -97,7 +131,9 @@ func (p *PersistentLog) Append(raw []byte) error {
 
 func (p *PersistentLog) Snapshot() StorageStat {
 	stat := StorageStat{
-		StoredRecords: p.records.Load(),
+		StoredRecords:    p.records.Load(),
+		RetentionRecords: p.retentionRecords,
+		SegmentCount:     p.segmentCount.Load(),
 	}
 	if err := p.failure(); err != nil {
 		stat.WriteError = err.Error()
@@ -123,6 +159,7 @@ func (p *PersistentLog) setFailure(err error) {
 	if err == nil {
 		return
 	}
+
 	p.failOnce.Do(func() {
 		p.errMu.Lock()
 		p.writeErr = err
@@ -142,7 +179,8 @@ func (p *PersistentLog) run() {
 
 	var file *os.File
 	var writer *bufio.Writer
-	var recordsInSegment int64
+	var current *segment
+	var recordsInCurrentSegment int64
 
 	closeCurrent := func() error {
 		if writer == nil {
@@ -155,8 +193,9 @@ func (p *PersistentLog) run() {
 			return err
 		}
 		err := file.Close()
-		writer = nil
 		file = nil
+		writer = nil
+		current = nil
 		return err
 	}
 
@@ -164,10 +203,13 @@ func (p *PersistentLog) run() {
 		if err := closeCurrent(); err != nil {
 			return err
 		}
+		if err := p.enforceRetention(); err != nil {
+			return err
+		}
 
-		ts := time.Now().UnixNano()
+		timestamp := time.Now().UnixNano()
 		for suffix := int64(0); ; suffix++ {
-			name := fmt.Sprintf("events-%019d-%03d.log", ts, suffix)
+			name := fmt.Sprintf("events-%019d-%03d.log", timestamp, suffix)
 			path := filepath.Join(p.dir, name)
 
 			f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o640)
@@ -179,8 +221,11 @@ func (p *PersistentLog) run() {
 			}
 
 			file = f
-			writer = bufio.NewWriterSize(f, 1<<20)
-			recordsInSegment = 0
+			writer = bufio.NewWriterSize(file, 1<<20)
+			current = &segment{path: path}
+			p.segments = append(p.segments, current)
+			p.segmentCount.Store(int64(len(p.segments)))
+			recordsInCurrentSegment = 0
 			return nil
 		}
 	}
@@ -198,7 +243,7 @@ func (p *PersistentLog) run() {
 				return
 			}
 
-			if writer == nil || recordsInSegment >= p.segmentRecords {
+			if writer == nil || recordsInCurrentSegment >= p.segmentRecords {
 				if err := openNext(); err != nil {
 					p.setFailure(fmt.Errorf("open storage segment: %w", err))
 					return
@@ -210,7 +255,8 @@ func (p *PersistentLog) run() {
 				return
 			}
 
-			recordsInSegment++
+			recordsInCurrentSegment++
+			current.records++
 			p.records.Add(1)
 
 		case <-flushTicker.C:
@@ -229,37 +275,92 @@ func (p *PersistentLog) run() {
 	}
 }
 
-func countStoredRecords(dir string) (int64, error) {
+func (p *PersistentLog) enforceRetention() error {
+	for len(p.segments) > 0 {
+		oldest := p.segments[0]
+		if p.records.Load()-oldest.records < p.retentionRecords {
+			break
+		}
+
+		if err := os.Remove(oldest.path); err != nil {
+			return fmt.Errorf("remove expired segment %s: %w", oldest.path, err)
+		}
+
+		p.records.Add(-oldest.records)
+		p.segments = p.segments[1:]
+		p.segmentCount.Store(int64(len(p.segments)))
+	}
+
+	return nil
+}
+
+func scanSegments(dir string) ([]*segment, int64, error) {
 	files, err := filepath.Glob(filepath.Join(dir, "events-*.log"))
 	if err != nil {
-		return 0, err
+		return nil, 0, err
 	}
+	sort.Strings(files)
 
+	segments := make([]*segment, 0, len(files))
 	var total int64
+
 	for _, path := range files {
-		file, err := os.Open(path)
+		records, err := countRecordsInFile(path)
 		if err != nil {
-			return 0, fmt.Errorf("open %s: %w", path, err)
+			return nil, 0, err
 		}
 
-		reader := bufio.NewReaderSize(file, 1<<20)
-		for {
-			_, err := reader.ReadBytes('\n')
-			if err == nil {
-				total++
-				continue
-			}
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			_ = file.Close()
-			return 0, fmt.Errorf("read %s: %w", path, err)
-		}
-
-		if err := file.Close(); err != nil {
-			return 0, err
-		}
+		segments = append(segments, &segment{
+			path:    path,
+			records: records,
+		})
+		total += records
 	}
 
-	return total, nil
+	return segments, total, nil
+}
+
+func trimSegments(
+	segments []*segment,
+	total int64,
+	retentionRecords int64,
+) ([]*segment, int64, error) {
+	for len(segments) > 0 {
+		oldest := segments[0]
+		if total-oldest.records < retentionRecords {
+			break
+		}
+
+		if err := os.Remove(oldest.path); err != nil {
+			return nil, 0, fmt.Errorf("remove expired segment %s: %w", oldest.path, err)
+		}
+
+		total -= oldest.records
+		segments = segments[1:]
+	}
+
+	return segments, total, nil
+}
+
+func countRecordsInFile(path string) (int64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer file.Close()
+
+	reader := bufio.NewReaderSize(file, 1<<20)
+	var records int64
+
+	for {
+		_, err := reader.ReadBytes('\n')
+		if err == nil {
+			records++
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			return records, nil
+		}
+		return 0, fmt.Errorf("read %s: %w", path, err)
+	}
 }

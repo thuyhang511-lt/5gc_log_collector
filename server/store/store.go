@@ -20,11 +20,22 @@ func New() *Store {
 	}
 }
 
-func (s *Store) EnablePersistence(dir string, segmentRecords int64, queueSize int) error {
-	records, err := NewPersistentLog(dir, segmentRecords, queueSize)
+func (s *Store) EnablePersistence(
+	dir string,
+	segmentRecords int64,
+	retentionRecords int64,
+	queueSize int,
+) error {
+	records, err := NewPersistentLog(
+		dir,
+		segmentRecords,
+		retentionRecords,
+		queueSize,
+	)
 	if err != nil {
 		return err
 	}
+
 	s.Records = records
 	return nil
 }
