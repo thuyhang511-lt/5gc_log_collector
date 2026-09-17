@@ -1,7 +1,3 @@
-// Package worker triển khai worker pool tách rời I/O (đọc TCP) khỏi phần
-// xử lý CPU-bound (parse + cập nhật thống kê), theo đúng kiến trúc đã
-// thiết kế: goroutine đọc chỉ đẩy dữ liệu thô vào channel, N worker cố
-// định mới là nơi thực sự parse và ghi vào store.
 package worker
 
 import (
@@ -43,6 +39,7 @@ func (p *Pool) Start() {
 
 func (p *Pool) runWorker() {
 	defer p.wg.Done()
+
 	for batch := range p.in {
 		p.processBatch(batch)
 	}
@@ -53,12 +50,24 @@ func (p *Pool) processBatch(batch Batch) {
 		if len(line) == 0 {
 			continue
 		}
+
 		record, err := protocol.Parse(line)
 		if err != nil {
 			log.Printf("worker: bỏ qua dòng log không hợp lệ: %v", err)
 			continue
 		}
-		p.store.Update(record)
+
+		// SỬA: dùng continue thay vì return. Bản gốc dùng "return" ở đây
+		// khiến 1 lỗi ghi đĩa của ĐÚNG 1 record làm toàn bộ các record
+		// CÒN LẠI trong cùng batch (có thể hàng trăm dòng, tuỳ kích
+		// thước 1 lần đọc TCP) bị bỏ qua theo, dù chúng hợp lệ và không
+		// liên quan gì tới lỗi đó. Sau khi Store.Update() đã được sửa để
+		// vẫn cập nhật thống kê RAM dù ghi đĩa lỗi, lỗi trả về ở đây chỉ
+		// còn mang tính cảnh báo — không có lý do gì để huỷ cả batch.
+		if err := p.store.Update(record, line); err != nil {
+			log.Printf("worker: lỗi ghi đĩa (thống kê vẫn được cập nhật bình thường): %v", err)
+			continue
+		}
 	}
 }
 

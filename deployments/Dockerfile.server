@@ -1,4 +1,3 @@
-# ---- Build stage ----
 FROM golang:1.23-alpine AS builder
 WORKDIR /src
 COPY go.mod ./
@@ -6,9 +5,10 @@ COPY protocol ./protocol
 COPY server ./server
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/server ./server
 
-# ---- Runtime stage ----
 FROM alpine:3.20
-RUN adduser -D -H appuser
+RUN adduser -D -H appuser \
+    && mkdir -p /data/logs \
+    && chown -R appuser:appuser /data
 WORKDIR /app
 COPY --from=builder /out/server .
 USER appuser
