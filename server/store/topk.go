@@ -2,7 +2,7 @@ package store
 
 import (
 	"container/heap"
-	"hash/fnv"
+	"sort"
 	"sync"
 )
 
@@ -20,15 +20,20 @@ type TopKStore struct {
 func NewTopKStore() *TopKStore {
 	ts := &TopKStore{}
 	for i := range ts.shards {
-		ts.shards[i] = &shard{freq: make(map[string]int64)}
+		ts.shards[i] = &shard{
+			freq: make(map[string]int64),
+		}
 	}
 	return ts
 }
 
 func (ts *TopKStore) shardFor(key string) *shard {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(key))
-	return ts.shards[h.Sum32()%numShards]
+	hash := uint32(2166136261)
+	for i := 0; i < len(key); i++ {
+		hash ^= uint32(key[i])
+		hash *= 16777619
+	}
+	return ts.shards[hash%numShards]
 }
 
 func (ts *TopKStore) Increment(key string) {
@@ -45,41 +50,73 @@ type KeyCount struct {
 
 type minHeap []KeyCount
 
-func (h minHeap) Len() int            { return len(h) }
-func (h minHeap) Less(i, j int) bool  { return h[i].Count < h[j].Count }
-func (h minHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *minHeap) Push(x interface{}) { *h = append(*h, x.(KeyCount)) }
-func (h *minHeap) Pop() interface{} {
+func (h minHeap) Len() int { return len(h) }
+
+func (h minHeap) Less(i, j int) bool {
+	return worse(h[i], h[j])
+}
+
+func (h minHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+}
+
+func (h *minHeap) Push(value any) {
+	*h = append(*h, value.(KeyCount))
+}
+
+func (h *minHeap) Pop() any {
 	old := *h
-	n := len(old)
-	item := old[n-1]
-	*h = old[:n-1]
+	last := len(old) - 1
+	item := old[last]
+	*h = old[:last]
 	return item
+}
+
+func better(a, b KeyCount) bool {
+	if a.Count != b.Count {
+		return a.Count > b.Count
+	}
+	return a.Key < b.Key
+}
+
+func worse(a, b KeyCount) bool {
+	if a.Count != b.Count {
+		return a.Count < b.Count
+	}
+	return a.Key > b.Key
 }
 
 func (ts *TopKStore) TopK(k int) []KeyCount {
 	if k <= 0 {
 		return nil
 	}
-	h := &minHeap{}
-	heap.Init(h)
+
+	resultHeap := &minHeap{}
+	heap.Init(resultHeap)
 
 	for _, sh := range ts.shards {
 		sh.mu.RLock()
 		for key, count := range sh.freq {
-			if h.Len() < k {
-				heap.Push(h, KeyCount{Key: key, Count: count})
-			} else if count > (*h)[0].Count {
-				heap.Pop(h)
-				heap.Push(h, KeyCount{Key: key, Count: count})
+			candidate := KeyCount{Key: key, Count: count}
+
+			if resultHeap.Len() < k {
+				heap.Push(resultHeap, candidate)
+			} else if better(candidate, (*resultHeap)[0]) {
+				heap.Pop(resultHeap)
+				heap.Push(resultHeap, candidate)
 			}
 		}
 		sh.mu.RUnlock()
 	}
 
-	result := make([]KeyCount, h.Len())
-	for i := len(result) - 1; i >= 0; i-- {
-		result[i] = heap.Pop(h).(KeyCount)
+	result := make([]KeyCount, resultHeap.Len())
+	for i := range result {
+		result[i] = heap.Pop(resultHeap).(KeyCount)
 	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return better(result[i], result[j])
+	})
+
 	return result
 }
