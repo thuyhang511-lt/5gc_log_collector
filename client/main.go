@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"log"
 	"math/rand"
 	"net"
@@ -12,84 +13,133 @@ import (
 	"5gc_log_collector/protocol"
 )
 
+const (
+	sendTick      = 10 * time.Millisecond
+	retryInterval = 500 * time.Millisecond
+)
+
 func main() {
 	serverAddr := envOr("SERVER_ADDR", "localhost:9000")
 	numProducers := envOrInt("PRODUCER_GOROUTINES", 8)
-	targetPerSec := envOrInt("TARGET_EVENTS_PER_SEC", 20000)
+	targetPerSec := envOrInt("TARGET_EVENTS_PER_SEC", 20_000)
 	batchSize := envOrInt("BATCH_SIZE", 100)
 
-	log.Printf("client: khởi động %d goroutine, mục tiêu %d event/giây, batch=%d, server=%s",
-		numProducers, targetPerSec, batchSize, serverAddr)
+	if numProducers <= 0 || targetPerSec <= 0 || batchSize <= 0 {
+		log.Fatal("client: PRODUCER_GOROUTINES, TARGET_EVENTS_PER_SEC và BATCH_SIZE phải lớn hơn 0")
+	}
+
+	log.Printf(
+		"client: khởi động %d goroutine, mục tiêu %d event/giây, batch=%d, server=%s",
+		numProducers, targetPerSec, batchSize, serverAddr,
+	)
 
 	var totalSent int64
-	perProducerTarget := targetPerSec / numProducers
+
+	baseTarget := targetPerSec / numProducers
+	remainder := targetPerSec % numProducers
 
 	for i := 0; i < numProducers; i++ {
-		go produce(serverAddr, batchSize, perProducerTarget, &totalSent)
+		perProducerTarget := baseTarget
+		if i < remainder {
+			perProducerTarget++
+		}
+
+		go produce(i, serverAddr, batchSize, perProducerTarget, &totalSent)
 	}
 
 	reportThroughput(&totalSent)
 }
 
-func produce(serverAddr string, batchSize, targetPerSec int, totalSent *int64) {
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-
-	batchesPerSec := targetPerSec / batchSize
-	if batchesPerSec <= 0 {
-		batchesPerSec = 1
-	}
-
-	interval := time.Second / time.Duration(batchesPerSec)
-	buf := make([]byte, 0, batchSize*96)
+func produce(
+	id int,
+	serverAddr string,
+	batchSize int,
+	targetPerSec int,
+	totalSent *int64,
+) {
+	rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(id)))
 
 	for {
-		conn := connectWithRetry(serverAddr)
+		conn := connectWithRetry(serverAddr, id)
+		err := sendEvents(conn, rng, batchSize, targetPerSec, totalSent)
+		_ = conn.Close()
 
-		ticker := time.NewTicker(interval)
-		connected := true
-
-		for connected {
-			<-ticker.C
-
-			buf = buf[:0]
-			for i := 0; i < batchSize; i++ {
-				buf = append(buf, protocol.Encode(randomRecord(rng))...)
-			}
-
-			if _, err := conn.Write(buf); err != nil {
-				log.Printf(
-					"client: mất kết nối tới %s: %v; đang kết nối lại...",
-					serverAddr,
-					err,
-				)
-				connected = false
-				continue
-			}
-
-			atomic.AddInt64(totalSent, int64(batchSize))
+		if err != nil {
+			log.Printf(
+				"client: producer=%d mất kết nối tới %s: %v; đang kết nối lại",
+				id, serverAddr, err,
+			)
 		}
 
-		ticker.Stop()
-		_ = conn.Close()
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(retryInterval)
 	}
 }
 
-func connectWithRetry(serverAddr string) net.Conn {
+func connectWithRetry(serverAddr string, id int) net.Conn {
 	for {
 		conn, err := net.DialTimeout("tcp", serverAddr, 2*time.Second)
 		if err == nil {
-			log.Printf("client: đã kết nối tới %s", serverAddr)
+			log.Printf("client: producer=%d đã kết nối tới %s", id, serverAddr)
 			return conn
 		}
 
 		log.Printf(
-			"client: chưa kết nối được tới %s: %v; thử lại sau 500ms",
-			serverAddr,
-			err,
+			"client: producer=%d chưa kết nối được tới %s: %v; thử lại sau %s",
+			id, serverAddr, err, retryInterval,
 		)
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(retryInterval)
 	}
+}
+
+func sendEvents(
+	conn net.Conn,
+	rng *rand.Rand,
+	batchSize int,
+	targetPerSec int,
+	totalSent *int64,
+) error {
+	ticker := time.NewTicker(sendTick)
+	defer ticker.Stop()
+
+	var carry int64
+
+	for range ticker.C {
+		carry += int64(targetPerSec) * int64(sendTick)
+		eventsToSend := int(carry / int64(time.Second))
+		carry %= int64(time.Second)
+
+		for eventsToSend > 0 {
+			currentBatchSize := min(batchSize, eventsToSend)
+			buf := make([]byte, 0, currentBatchSize*128)
+
+			for i := 0; i < currentBatchSize; i++ {
+				buf = append(buf, protocol.Encode(randomRecord(rng))...)
+			}
+
+			if err := writeAll(conn, buf); err != nil {
+				return err
+			}
+
+			atomic.AddInt64(totalSent, int64(currentBatchSize))
+			eventsToSend -= currentBatchSize
+		}
+	}
+
+	return nil
+}
+
+func writeAll(conn net.Conn, data []byte) error {
+	for len(data) > 0 {
+		n, err := conn.Write(data)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrUnexpectedEOF
+		}
+		data = data[n:]
+	}
+	return nil
 }
 
 func randomRecord(rng *rand.Rand) protocol.LogRecord {
@@ -114,7 +164,7 @@ func randomRecord(rng *rand.Rand) protocol.LogRecord {
 }
 
 func randomIMSI(rng *rand.Rand) string {
-	n := rng.Intn(100000)
+	n := rng.Intn(100_000)
 	return "45204" + padLeft(strconv.Itoa(n), 10)
 }
 
@@ -137,16 +187,16 @@ func reportThroughput(totalSent *int64) {
 }
 
 func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+	if value := os.Getenv(key); value != "" {
+		return value
 	}
 	return fallback
 }
 
 func envOrInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
+	if value := os.Getenv(key); value != "" {
+		if number, err := strconv.Atoi(value); err == nil {
+			return number
 		}
 	}
 	return fallback
