@@ -32,35 +32,63 @@ func main() {
 }
 
 func produce(serverAddr string, batchSize, targetPerSec int, totalSent *int64) {
-	conn, err := net.Dial("tcp", serverAddr)
-	if err != nil {
-		log.Printf("client: không kết nối được tới %s: %v", serverAddr, err)
-		return
-	}
-	defer conn.Close()
-
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	batchesPerSec := targetPerSec / batchSize
 	if batchesPerSec <= 0 {
 		batchesPerSec = 1
 	}
-	interval := time.Second / time.Duration(batchesPerSec)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 
+	interval := time.Second / time.Duration(batchesPerSec)
 	buf := make([]byte, 0, batchSize*96)
 
-	for range ticker.C {
-		buf = buf[:0]
-		for i := 0; i < batchSize; i++ {
-			buf = append(buf, protocol.Encode(randomRecord(rng))...)
+	for {
+		conn := connectWithRetry(serverAddr)
+
+		ticker := time.NewTicker(interval)
+		connected := true
+
+		for connected {
+			<-ticker.C
+
+			buf = buf[:0]
+			for i := 0; i < batchSize; i++ {
+				buf = append(buf, protocol.Encode(randomRecord(rng))...)
+			}
+
+			if _, err := conn.Write(buf); err != nil {
+				log.Printf(
+					"client: mất kết nối tới %s: %v; đang kết nối lại...",
+					serverAddr,
+					err,
+				)
+				connected = false
+				continue
+			}
+
+			atomic.AddInt64(totalSent, int64(batchSize))
 		}
-		if _, err := conn.Write(buf); err != nil {
-			log.Printf("client: lỗi gửi batch: %v", err)
-			return
+
+		ticker.Stop()
+		_ = conn.Close()
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func connectWithRetry(serverAddr string) net.Conn {
+	for {
+		conn, err := net.DialTimeout("tcp", serverAddr, 2*time.Second)
+		if err == nil {
+			log.Printf("client: đã kết nối tới %s", serverAddr)
+			return conn
 		}
-		atomic.AddInt64(totalSent, int64(batchSize))
+
+		log.Printf(
+			"client: chưa kết nối được tới %s: %v; thử lại sau 500ms",
+			serverAddr,
+			err,
+		)
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 
