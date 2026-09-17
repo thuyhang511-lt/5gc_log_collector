@@ -19,9 +19,6 @@ type StorageStat struct {
 	WriteError    string `json:"write_error,omitempty"`
 }
 
-// PersistentLog ghi raw event theo dạng newline-delimited.
-// Mỗi segment mặc định chứa tối đa 1 triệu record.
-// Không tự xoá segment cũ, nên sau 3 segment hệ thống giữ tối thiểu 3 triệu log.
 type PersistentLog struct {
 	dir            string
 	segmentRecords int64
@@ -168,10 +165,6 @@ func (p *PersistentLog) run() {
 			return err
 		}
 
-		// SỬA: tính timestamp 1 LẦN trước vòng lặp, chỉ tăng suffix khi
-		// trùng tên — bản gốc gọi time.Now().UnixNano() lại mỗi vòng lặp,
-		// khiến suffix mất tác dụng thật sự (mỗi lần thử đều có timestamp
-		// khác nhau, suffix không còn dùng để phân biệt trong cùng 1 nano-giây).
 		ts := time.Now().UnixNano()
 		for suffix := int64(0); ; suffix++ {
 			name := fmt.Sprintf("events-%019d-%03d.log", ts, suffix)

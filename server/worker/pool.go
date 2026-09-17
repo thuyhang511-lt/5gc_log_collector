@@ -57,13 +57,6 @@ func (p *Pool) processBatch(batch Batch) {
 			continue
 		}
 
-		// SỬA: dùng continue thay vì return. Bản gốc dùng "return" ở đây
-		// khiến 1 lỗi ghi đĩa của ĐÚNG 1 record làm toàn bộ các record
-		// CÒN LẠI trong cùng batch (có thể hàng trăm dòng, tuỳ kích
-		// thước 1 lần đọc TCP) bị bỏ qua theo, dù chúng hợp lệ và không
-		// liên quan gì tới lỗi đó. Sau khi Store.Update() đã được sửa để
-		// vẫn cập nhật thống kê RAM dù ghi đĩa lỗi, lỗi trả về ở đây chỉ
-		// còn mang tính cảnh báo — không có lý do gì để huỷ cả batch.
 		if err := p.store.Update(record, line); err != nil {
 			log.Printf("worker: lỗi ghi đĩa (thống kê vẫn được cập nhật bình thường): %v", err)
 			continue

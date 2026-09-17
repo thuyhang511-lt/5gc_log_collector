@@ -44,20 +44,12 @@ func main() {
 	pool := worker.New(numWorkers, channelBuffer, s)
 	pool.Start()
 
-	// SỬA: bản gốc chỉ có "defer pool.Close()" / "defer s.Close()" —
-	// nhưng main() không bao giờ return bình thường (serveTCP() chạy
-	// vòng lặp vô hạn), và log.Fatalf/tín hiệu hệ thống (SIGTERM/Ctrl+C)
-	// đều thoát tiến trình theo cách KHÔNG chạy defer. Kết quả: 2 dòng
-	// defer đó trước đây là dead code — không bao giờ thực sự chạy khi
-	// dừng bằng Ctrl+C, dữ liệu còn trong bufio.Writer (tới 1MB) chưa
-	// kịp flush xuống đĩa sẽ mất. Thêm signal handler thật để đảm bảo
-	// graceful shutdown thực sự xảy ra.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
 		log.Printf("server: nhận tín hiệu %v, đang xử lý nốt dữ liệu tồn đọng trước khi thoát...", sig)
-		pool.Close() // chờ worker xử lý hết phần còn lại trong ingest channel
+		pool.Close()
 		if err := s.Close(); err != nil {
 			log.Printf("server: lỗi khi đóng lưu trữ: %v", err)
 		}

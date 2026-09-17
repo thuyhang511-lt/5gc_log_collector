@@ -29,15 +29,6 @@ func (s *Store) EnablePersistence(dir string, segmentRecords int64, queueSize in
 	return nil
 }
 
-// Update cập nhật thống kê trong RAM VÀ (nếu bật) ghi raw log xuống đĩa.
-//
-// QUAN TRỌNG: lỗi ghi đĩa (persistErr) KHÔNG được phép chặn việc cập
-// nhật Counters/Latencies/TopK — 2 việc này độc lập hoàn toàn với đĩa.
-// Nếu return sớm ngay khi Append() lỗi (như bản gốc), 1 lần lỗi ghi đĩa
-// thoáng qua (đầy tạm thời, volume bị gián đoạn...) sẽ làm TOÀN BỘ
-// thống kê trong RAM ngừng cập nhật vĩnh viễn cho tới khi restart —
-// dù bản thân Counters/Latencies/TopK không hề phụ thuộc gì vào đĩa.
-// Lỗi vẫn được trả về để worker log cảnh báo, nhưng không chặn phần còn lại.
 func (s *Store) Update(r protocol.LogRecord, raw []byte) error {
 	var persistErr error
 	if s.Records != nil {
