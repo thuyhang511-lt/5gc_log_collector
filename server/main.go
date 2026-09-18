@@ -29,9 +29,9 @@ func main() {
 	numWorkers := envOrInt("WORKER_COUNT", runtime.GOMAXPROCS(0))
 	channelBuffer := envOrInt("CHANNEL_BUFFER", 8192)
 	storageDir := envOr("STORAGE_DIR", "data/logs")
-	segmentRecords := int64(envOrInt("STORAGE_SEGMENT_RECORDS", 250_000))
-	retentionRecords := int64(envOrInt("RETENTION_RECORDS", 3_000_000))
-	storageQueue := envOrInt("STORAGE_QUEUE", 16_384)
+	segmentRecords := int64(envOrInt("STORAGE_SEGMENT_RECORDS", 250000))
+	retentionRecords := int64(envOrInt("RETENTION_RECORDS", 3000000))
+	storageQueue := envOrInt("STORAGE_QUEUE", 16384)
 
 	if numWorkers <= 0 ||
 		channelBuffer <= 0 ||
@@ -172,8 +172,8 @@ func topKParam(r *http.Request) int {
 	if err != nil || k <= 0 {
 		return 10
 	}
-	if k > 10_000 {
-		return 10_000
+	if k > 10000 {
+		return 10000
 	}
 	return k
 }

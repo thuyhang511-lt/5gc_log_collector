@@ -21,7 +21,7 @@ const (
 func main() {
 	serverAddr := envOr("SERVER_ADDR", "localhost:9000")
 	numProducers := envOrInt("PRODUCER_GOROUTINES", 8)
-	targetPerSec := envOrInt("TARGET_EVENTS_PER_SEC", 20_000)
+	targetPerSec := envOrInt("TARGET_EVENTS_PER_SEC", 20000)
 	batchSize := envOrInt("BATCH_SIZE", 100)
 
 	if numProducers <= 0 || targetPerSec <= 0 || batchSize <= 0 {
@@ -164,7 +164,7 @@ func randomRecord(rng *rand.Rand) protocol.LogRecord {
 }
 
 func randomIMSI(rng *rand.Rand) string {
-	n := rng.Intn(100_000)
+	n := rng.Intn(100000)
 	return "45204" + padLeft(strconv.Itoa(n), 10)
 }
 

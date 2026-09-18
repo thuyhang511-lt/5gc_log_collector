@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	defaultSegmentRecords   int64 = 250_000
-	defaultRetentionRecords int64 = 3_000_000
+	defaultSegmentRecords   int64 = 250000
+	defaultRetentionRecords int64 = 3000000
 )
 
 type StorageStat struct {
