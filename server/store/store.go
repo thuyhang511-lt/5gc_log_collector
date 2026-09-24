@@ -8,6 +8,7 @@ type Store struct {
 	TopIMSI   *TopKStore
 	TopAPI    *TopKStore
 	Records   *PersistentLog
+	Analytics *ClickHouseStore
 }
 
 func New() *Store {
@@ -40,10 +41,24 @@ func (s *Store) EnablePersistence(
 	return nil
 }
 
+func (s *Store) EnableClickHouse(cfg ClickHouseConfig) error {
+	analytics, err := NewClickHouseStore(cfg)
+	if err != nil {
+		return err
+	}
+
+	s.Analytics = analytics
+	return nil
+}
+
 func (s *Store) Update(r protocol.LogRecord, raw []byte) error {
 	var persistErr error
 	if s.Records != nil {
 		persistErr = s.Records.Append(raw)
+	}
+
+	if s.Analytics != nil {
+		s.Analytics.Append(r)
 	}
 
 	isError := r.Status >= 500
@@ -56,10 +71,16 @@ func (s *Store) Update(r protocol.LogRecord, raw []byte) error {
 }
 
 func (s *Store) Close() error {
+	var err error
 	if s.Records != nil {
-		return s.Records.Close()
+		err = s.Records.Close()
 	}
-	return nil
+	if s.Analytics != nil {
+		if closeErr := s.Analytics.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	return err
 }
 
 func allAPIs() []string {

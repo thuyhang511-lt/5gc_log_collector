@@ -32,6 +32,7 @@ func main() {
 	segmentRecords := int64(envOrInt("STORAGE_SEGMENT_RECORDS", 250000))
 	retentionRecords := int64(envOrInt("RETENTION_RECORDS", 3000000))
 	storageQueue := envOrInt("STORAGE_QUEUE", 16384)
+	clickhouseAddr := envOr("CLICKHOUSE_ADDR", "")
 
 	if numWorkers <= 0 ||
 		channelBuffer <= 0 ||
@@ -49,6 +50,14 @@ func main() {
 		storageQueue,
 	); err != nil {
 		log.Fatalf("server: không thể khởi tạo lưu trữ: %v", err)
+	}
+
+	if clickhouseAddr != "" {
+		clickhouseConfig := store.BuildClickHouseConfigFromEnv()
+		if err := s.EnableClickHouse(clickhouseConfig); err != nil {
+			log.Fatalf("server: không thể khởi tạo ClickHouse: %v", err)
+		}
+		log.Printf("server: ClickHouse=%s", clickhouseAddr)
 	}
 
 	pool := worker.New(numWorkers, channelBuffer, s)
@@ -153,6 +162,26 @@ func serveHTTP(addr string, s *store.Store) {
 	})
 	mux.HandleFunc("/stats/topk/imsi", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.TopIMSI.TopK(topKParam(r)))
+	})
+	mux.HandleFunc("/stats/history/topk/imsi", func(w http.ResponseWriter, r *http.Request) {
+		if s.Analytics == nil {
+			http.Error(w, "ClickHouse is not enabled", http.StatusServiceUnavailable)
+			return
+		}
+
+		query, err := store.BuildTopKQuery(r.URL.Query())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		results, err := s.Analytics.QueryTopKIMSI(query)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		writeJSON(w, results)
 	})
 	mux.HandleFunc("/stats/topk/api", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.TopAPI.TopK(topKParam(r)))

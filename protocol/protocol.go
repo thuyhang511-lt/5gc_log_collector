@@ -13,6 +13,7 @@ type LogRecord struct {
 	NF        string
 	API       string
 	IMSI      string
+	Location  string
 	Latency   int64
 	Status    int
 }
@@ -44,6 +45,8 @@ func Encode(r LogRecord) []byte {
 	b.WriteString(r.API)
 	b.WriteString(";imsi=")
 	b.WriteString(r.IMSI)
+	b.WriteString(";location=")
+	b.WriteString(r.Location)
 	b.WriteString(" latency=")
 	b.WriteString(strconv.FormatInt(r.Latency, 10))
 	b.WriteString(";status=")
@@ -59,7 +62,7 @@ func Parse(line []byte) (LogRecord, error) {
 	normalized := bytes.Join(bytes.Fields(line), []byte(";"))
 	input := string(normalized)
 
-	var hasTimestamp, hasNF, hasAPI, hasIMSI, hasLatency, hasStatus bool
+	var hasTimestamp, hasNF, hasAPI, hasIMSI, hasLocation, hasLatency, hasStatus bool
 
 	for input != "" {
 		var field string
@@ -109,6 +112,13 @@ func Parse(line []byte) (LogRecord, error) {
 			r.IMSI = value
 			hasIMSI = true
 
+		case "location":
+			if hasLocation {
+				return r, fmt.Errorf("protocol: duplicate location")
+			}
+			r.Location = value
+			hasLocation = true
+
 		case "latency":
 			if hasLatency {
 				return r, fmt.Errorf("protocol: duplicate latency")
@@ -136,7 +146,7 @@ func Parse(line []byte) (LogRecord, error) {
 		}
 	}
 
-	if !hasTimestamp || !hasNF || !hasAPI || !hasIMSI || !hasLatency || !hasStatus {
+	if !hasTimestamp || !hasNF || !hasAPI || !hasIMSI || !hasLocation || !hasLatency || !hasStatus {
 		return r, fmt.Errorf("protocol: missing required field")
 	}
 	if !validNFAPI(r.NF, r.API) {

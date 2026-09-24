@@ -18,6 +18,8 @@ const (
 	retryInterval = 500 * time.Millisecond
 )
 
+var locations = []string{"Hanoi", "HCM", "Danang", "Haiphong"}
+
 func main() {
 	serverAddr := envOr("SERVER_ADDR", "localhost:9000")
 	numProducers := envOrInt("PRODUCER_GOROUTINES", 8)
@@ -147,6 +149,7 @@ func randomRecord(rng *rand.Rand) protocol.LogRecord {
 	nf := nfs[rng.Intn(len(nfs))]
 	apis := protocol.ValidAPIs[nf]
 	api := apis[rng.Intn(len(apis))]
+	location := locations[rng.Intn(len(locations))]
 
 	status := 200
 	if rng.Float64() < 0.05 {
@@ -158,6 +161,7 @@ func randomRecord(rng *rand.Rand) protocol.LogRecord {
 		NF:        nf,
 		API:       api,
 		IMSI:      randomIMSI(rng),
+		Location:  location,
 		Latency:   int64(rng.Intn(300) + 1),
 		Status:    status,
 	}
